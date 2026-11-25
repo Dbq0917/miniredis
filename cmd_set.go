@@ -119,7 +119,7 @@ func (m *Miniredis) cmdSdiffstore(c *server.Peer, cmd string, args []string) {
 			return
 		}
 
-		db.del(dest, true)
+		db.quietDel(dest, true)
 		if len(set) > 0 {
 			db.setSet(dest, set)
 		}
@@ -168,7 +168,7 @@ func (m *Miniredis) cmdSinterstore(c *server.Peer, cmd string, args []string) {
 			return
 		}
 
-		db.del(dest, true)
+		db.quietDel(dest, true)
 		if len(set) > 0 {
 			db.setSet(dest, set)
 		}
@@ -594,7 +594,7 @@ func (m *Miniredis) cmdSunionstore(c *server.Peer, cmd string, args []string) {
 			return
 		}
 
-		db.del(dest, true)
+		db.quietDel(dest, true)
 		if len(set) > 0 {
 			db.setSet(dest, set)
 		}

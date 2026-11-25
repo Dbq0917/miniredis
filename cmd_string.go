@@ -171,7 +171,7 @@ func (m *Miniredis) cmdSet(c *server.Peer, cmd string, args []string) {
 
 		old, existed := db.stringKeys[opts.key]
 		if !readonly {
-			db.del(opts.key, true) // be sure to remove existing values of other type keys.
+			db.quietDel(opts.key, true) // be sure to remove existing values of other type keys.
 			// a vanilla SET clears the expire
 			if opts.ttl >= 0 { // EXAT/PXAT can expire right away
 				db.stringSet(opts.key, opts.value)
@@ -215,7 +215,7 @@ func (m *Miniredis) cmdSetex(c *server.Peer, cmd string, args []string) {
 	withTx(m, c, func(c *server.Peer, ctx *connCtx) {
 		db := m.db(ctx.selectedDB)
 
-		db.del(key, true) // Clear any existing keys.
+		db.quietDel(key, true) // Clear any existing keys.
 		db.stringSet(key, value)
 		db.ttl[key] = time.Duration(ttl) * time.Second
 		c.WriteOK()
@@ -248,7 +248,7 @@ func (m *Miniredis) cmdPsetex(c *server.Peer, cmd string, args []string) {
 	withTx(m, c, func(c *server.Peer, ctx *connCtx) {
 		db := m.db(ctx.selectedDB)
 
-		db.del(opts.key, true) // Clear any existing keys.
+		db.quietDel(opts.key, true) // Clear any existing keys.
 		db.stringSet(opts.key, opts.value)
 		db.ttl[opts.key] = time.Duration(opts.ttl) * time.Millisecond
 		c.WriteOK()
@@ -296,7 +296,7 @@ func (m *Miniredis) cmdMset(c *server.Peer, cmd string, args []string) {
 			key, value := args[0], args[1]
 			args = args[2:]
 
-			db.del(key, true) // clear TTL
+			db.quietDel(key, true) // clear TTL, stringSet emits "set"
 			db.stringSet(key, value)
 		}
 		c.WriteOK()
@@ -907,7 +907,7 @@ func (m *Miniredis) cmdBitop(c *server.Peer, cmd string, args []string) {
 				}[opts.op]
 				res = sliceBinOp(cb, res, []byte(v))
 			}
-			db.del(opts.target, true)
+			db.quietDel(opts.target, true)
 			if len(res) == 0 {
 				db.del(opts.target, true)
 			} else {
@@ -929,7 +929,7 @@ func (m *Miniredis) cmdBitop(c *server.Peer, cmd string, args []string) {
 			for i := range value {
 				value[i] = ^value[i]
 			}
-			db.del(opts.target, true)
+			db.quietDel(opts.target, true)
 			if len(value) == 0 {
 				db.del(opts.target, true)
 			} else {
@@ -1213,7 +1213,7 @@ func (m *Miniredis) cmdDelex(c *server.Peer, cmd string, args []string) {
 			shouldDelete = !shouldDelete
 		}
 		if shouldDelete {
-			db.del(opts.key, true) // delete expire
+			db.del(opts.key, true) // delete expire; a real "del" event
 			c.WriteInt(1)
 		} else {
 			c.WriteInt(0)

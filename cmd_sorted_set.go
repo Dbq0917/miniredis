@@ -358,7 +358,7 @@ func (m *Miniredis) cmdZdiffstore(c *server.Peer, cmd string, args []string) {
 			return
 		}
 
-		db.del(destination, true)
+		db.quietDel(destination, true)
 		if sset.card() > 0 {
 			db.ssetSet(destination, sset)
 		}
@@ -620,7 +620,7 @@ func (m *Miniredis) makeCmdZinter(store bool) func(c *server.Peer, cmd string, a
 
 			if opts.Store {
 				// ZINTERSTORE mode
-				db.del(opts.Destination, true)
+				db.quietDel(opts.Destination, true)
 				if len(sset) > 0 {
 					db.ssetSet(opts.Destination, sset)
 				}
@@ -1514,7 +1514,7 @@ func (m *Miniredis) cmdZunionstore(c *server.Peer, cmd string, args []string) {
 			}
 		}
 		if deleteDest {
-			db.del(destination, true)
+			db.quietDel(destination, true)
 		}
 
 		sset, err := executeZUnion(db, opts)

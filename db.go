@@ -97,7 +97,9 @@ func (db *RedisDB) move(key string, to *RedisDB) bool {
 		to.ttl[key] = v
 	}
 	to.incr(key)
-	db.del(key, true)
+	db.quietDel(key, true)
+	db.master.notifyKeyspace(key, KeyspaceDel)
+	to.master.notifyKeyspace(key, KeyspaceSet)
 	return true
 }
 
@@ -105,7 +107,8 @@ func (db *RedisDB) rename(from, to string) {
 	if from == to {
 		return
 	}
-	db.del(to, true)
+	overwritten := db.exists(to)
+	db.quietDel(to, true)
 	switch db.t(from) {
 	case keyTypeString:
 		db.stringKeys[to] = db.stringKeys[from]
@@ -133,10 +136,18 @@ func (db *RedisDB) rename(from, to string) {
 	}
 	db.incr(to)
 
-	db.del(from, true)
+	db.quietDel(from, true)
+	if overwritten {
+		db.master.notifyKeyspace(to, KeyspaceDel)
+	}
+	db.master.notifyKeyspace(from, KeyspaceDel)
+	db.master.notifyKeyspace(to, KeyspaceSet)
 }
 
-func (db *RedisDB) del(k string, delTTL bool) {
+// quietDel removes a key without emitting a keyspace event. It is used by
+// primitives which emit their own event (e.g. a string set overwriting an
+// existing key only emits one "set" event).
+func (db *RedisDB) quietDel(k string, delTTL bool) {
 	if !db.exists(k) {
 		return
 	}
@@ -168,6 +179,15 @@ func (db *RedisDB) del(k string, delTTL bool) {
 	}
 }
 
+// del removes a key and emits a "del" keyspace event when a key was removed.
+func (db *RedisDB) del(k string, delTTL bool) {
+	if !db.exists(k) {
+		return
+	}
+	db.quietDel(k, delTTL)
+	db.master.notifyKeyspace(k, KeyspaceDel)
+}
+
 // stringGet returns the string key or "" on error/nonexists.
 func (db *RedisDB) stringGet(k string) string {
 	if t, ok := db.keys[k]; !ok || t != keyTypeString {
@@ -178,10 +198,11 @@ func (db *RedisDB) stringGet(k string) string {
 
 // stringSet force set()s a key. Does not touch expire.
 func (db *RedisDB) stringSet(k, v string) {
-	db.del(k, false)
+	db.quietDel(k, false)
 	db.keys[k] = keyTypeString
 	db.stringKeys[k] = v
 	db.incr(k)
+	db.master.notifyKeyspace(k, KeyspaceSet)
 }
 
 // change int key value
@@ -268,6 +289,9 @@ func (db *RedisDB) listLpush(k, v string) int {
 	l = append([]string{v}, l...)
 	db.listKeys[k] = l
 	db.incr(k)
+	if !ok {
+		db.master.notifyKeyspace(k, KeyspaceSet)
+	}
 	return len(l)
 }
 
@@ -293,6 +317,9 @@ func (db *RedisDB) listPush(k string, v ...string) int {
 	l = append(l, v...)
 	db.listKeys[k] = l
 	db.incr(k)
+	if !ok {
+		db.master.notifyKeyspace(k, KeyspaceSet)
+	}
 	return len(l)
 }
 
@@ -314,6 +341,7 @@ func (db *RedisDB) setSet(k string, set setKey) {
 	db.keys[k] = keyTypeSet
 	db.setKeys[k] = set
 	db.incr(k)
+	db.master.notifyKeyspace(k, KeyspaceSet)
 }
 
 // setadd adds members to a set. Returns nr of new keys.
@@ -333,6 +361,9 @@ func (db *RedisDB) setAdd(k string, elems ...string) int {
 	db.setKeys[k] = s
 	if !ok || added > 0 {
 		db.incr(k)
+	}
+	if !ok {
+		db.master.notifyKeyspace(k, KeyspaceSet)
 	}
 	return added
 }
@@ -412,8 +443,9 @@ func (db *RedisDB) hashGet(key, field string) string {
 
 // hashSet returns the number of new keys
 func (db *RedisDB) hashSet(k string, fv ...string) int {
+	existed := db.exists(k)
 	if t, ok := db.keys[k]; ok && t != keyTypeHash {
-		db.del(k, true)
+		db.quietDel(k, true)
 	}
 	db.keys[k] = keyTypeHash
 	if _, ok := db.hashKeys[k]; !ok {
@@ -428,6 +460,9 @@ func (db *RedisDB) hashSet(k string, fv ...string) int {
 		if !ok {
 			new++
 		}
+	}
+	if !existed {
+		db.master.notifyKeyspace(k, KeyspaceSet)
 	}
 	return new
 }
@@ -484,6 +519,7 @@ func (db *RedisDB) ssetSet(key string, sset sortedSet) {
 	db.keys[key] = keyTypeSortedSet
 	db.incr(key)
 	db.sortedsetKeys[key] = sset
+	db.master.notifyKeyspace(key, KeyspaceSet)
 }
 
 // ssetAdd adds member to a sorted set. Returns whether this was a new member.
@@ -500,6 +536,9 @@ func (db *RedisDB) ssetAdd(key string, score float64, member string) bool {
 	ss[member] = score
 	db.sortedsetKeys[key] = ss
 	db.incr(key)
+	if !ok {
+		db.master.notifyKeyspace(key, KeyspaceSet)
+	}
 	return !ok
 }
 
@@ -599,6 +638,9 @@ func (db *RedisDB) ssetIncrby(k, m string, delta float64) float64 {
 	v += delta
 	ss.set(v, m)
 	db.incr(k)
+	if !ok {
+		db.master.notifyKeyspace(k, KeyspaceSet)
+	}
 	return v
 }
 
@@ -751,6 +793,7 @@ func (db *RedisDB) newStream(key string) (*streamKey, error) {
 	s := newStreamKey()
 	db.streamKeys[key] = s
 	db.incr(key)
+	db.master.notifyKeyspace(key, KeyspaceSet)
 	return s, nil
 }
 
@@ -802,7 +845,8 @@ func (db *RedisDB) checkHashFieldTTL(key string, duration time.Duration) {
 
 			// If hash is now empty, delete the entire key
 			if len(db.hashKeys[key]) == 0 {
-				db.del(key, true)
+				db.quietDel(key, true)
+				db.master.notifyKeyspace(key, KeyspaceExpired)
 			}
 		}
 	}
@@ -810,7 +854,10 @@ func (db *RedisDB) checkHashFieldTTL(key string, duration time.Duration) {
 
 func (db *RedisDB) checkTTL(key string) {
 	if v, ok := db.ttl[key]; ok && v <= 0 {
-		db.del(key, true)
+		db.quietDel(key, true)
+		// The key has actually vanished now; that is the moment Redis would
+		// deliver the "expired" notification.
+		db.master.notifyKeyspace(key, KeyspaceExpired)
 	}
 }
 
@@ -832,6 +879,9 @@ func (db *RedisDB) hllAdd(k string, elems ...string) int {
 	db.hllKeys[k] = s
 	if !ok || hllAltered == 1 {
 		db.incr(k)
+	}
+	if !ok {
+		db.master.notifyKeyspace(k, KeyspaceSet)
 	}
 	return hllAltered
 }
@@ -864,6 +914,7 @@ func (db *RedisDB) hllMerge(keys []string) error {
 	restKeys := keys[1:]
 
 	var destHll *hll
+	destExisted := db.exists(destKey)
 	if db.exists(destKey) {
 		destHll = db.hllKeys[destKey]
 	} else {
@@ -880,6 +931,9 @@ func (db *RedisDB) hllMerge(keys []string) error {
 	db.hllKeys[destKey] = destHll
 	db.keys[destKey] = keyTypeHll
 	db.incr(destKey)
+	if !destExisted {
+		db.master.notifyKeyspace(destKey, KeyspaceSet)
+	}
 
 	return nil
 }

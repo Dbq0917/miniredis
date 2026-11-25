@@ -111,7 +111,7 @@ func (db *RedisDB) Set(k, v string) error {
 	if db.exists(k) && db.t(k) != keyTypeString {
 		return ErrWrongType
 	}
-	db.del(k, true) // Remove expire
+	db.quietDel(k, true) // Remove expire; stringSet emits "set"
 	db.stringSet(k, v)
 	return nil
 }

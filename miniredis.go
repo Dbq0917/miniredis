@@ -70,6 +70,7 @@ type Miniredis struct {
 	clockTTL    bool      // decrease TTLs as the clock advances
 	lastTick    time.Time // last time TTLs were advanced, if clockTTL is set
 	subscribers map[*Subscriber]struct{}
+	keyspace    *keyspaceSubs
 	rand        *rand.Rand
 	Ctx         context.Context
 	CtxCancel   context.CancelFunc
@@ -92,8 +93,9 @@ type connCtx struct {
 	dirtyTransaction bool           // any error during QUEUEing
 	watch            map[dbKey]uint // WATCHed keys
 	subscriber       *Subscriber    // client is in PUBSUB mode if not nil
-	nested           bool           // this is called via Lua
-	nestedSHA        string         // set to the SHA of the nesting function
+	keyspaceSubs     []*KeyspaceSubscriber
+	nested           bool   // this is called via Lua
+	nestedSHA        string // set to the SHA of the nesting function
 }
 
 // NewMiniRedis makes a new, non-started, Miniredis object.
@@ -102,6 +104,7 @@ func NewMiniRedis() *Miniredis {
 		dbs:         map[int]*RedisDB{},
 		scripts:     map[string]string{},
 		subscribers: map[*Subscriber]struct{}{},
+		keyspace:    newKeyspaceSubs(),
 	}
 	m.Ctx, m.CtxCancel = context.WithCancel(context.Background())
 	m.signal = sync.NewCond(&m)
@@ -298,6 +301,9 @@ func (m *Miniredis) Close() {
 
 	// the OnDisconnect callbacks can lock m, so run Close() outside the lock.
 	srv.Close()
+
+	// Drop any keyspace subscribers which were not bound to a connection.
+	m.keyspace.closeAll()
 }
 
 // RequireAuth makes every connection need to AUTH first. This is the old 'AUTH [password] command.

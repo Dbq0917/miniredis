@@ -304,7 +304,7 @@ func (m *Miniredis) cmdGeoradius(c *server.Peer, cmd string, args []string) {
 
 		// deal with "STORE x"
 		if opts.withStore {
-			db.del(opts.storeKey, true)
+			db.quietDel(opts.storeKey, true)
 			for _, member := range matches {
 				db.ssetAdd(opts.storeKey, member.Score, member.Name)
 			}
@@ -314,7 +314,7 @@ func (m *Miniredis) cmdGeoradius(c *server.Peer, cmd string, args []string) {
 
 		// deal with "STOREDIST x"
 		if opts.withStoredist {
-			db.del(opts.storedistKey, true)
+			db.quietDel(opts.storedistKey, true)
 			for _, member := range matches {
 				db.ssetAdd(opts.storedistKey, member.Distance/toMeter, member.Name)
 			}
@@ -498,7 +498,7 @@ func (m *Miniredis) cmdGeoradiusbymember(c *server.Peer, cmd string, args []stri
 
 		// deal with "STORE x"
 		if opts.withStore {
-			db.del(opts.storeKey, true)
+			db.quietDel(opts.storeKey, true)
 			for _, member := range matches {
 				db.ssetAdd(opts.storeKey, member.Score, member.Name)
 			}
@@ -508,7 +508,7 @@ func (m *Miniredis) cmdGeoradiusbymember(c *server.Peer, cmd string, args []stri
 
 		// deal with "STOREDIST x"
 		if opts.withStoredist {
-			db.del(opts.storedistKey, true)
+			db.quietDel(opts.storedistKey, true)
 			for _, member := range matches {
 				db.ssetAdd(opts.storedistKey, member.Distance/opts.toMeter, member.Name)
 			}

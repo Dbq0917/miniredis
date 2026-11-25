@@ -92,7 +92,8 @@ func (m *Miniredis) cmdHsetnx(c *server.Peer, cmd string, args []string) {
 			return
 		}
 
-		if _, ok := db.hashKeys[opts.key]; !ok {
+		_, existed := db.hashKeys[opts.key]
+		if !existed {
 			db.hashKeys[opts.key] = map[string]string{}
 			db.keys[opts.key] = keyTypeHash
 		}
@@ -103,6 +104,9 @@ func (m *Miniredis) cmdHsetnx(c *server.Peer, cmd string, args []string) {
 		}
 		db.hashKeys[opts.key][opts.field] = opts.value
 		db.incr(opts.key)
+		if !existed {
+			m.notifyKeyspace(opts.key, KeyspaceSet)
+		}
 		c.WriteInt(1)
 	})
 }
