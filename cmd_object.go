@@ -39,7 +39,9 @@ func (m *Miniredis) cmdObjectIdletime(c *server.Peer, args []string) {
 	withTx(m, c, func(c *server.Peer, ctx *connCtx) {
 		db := m.db(ctx.selectedDB)
 
+		db.lruMu.RLock()
 		t, ok := db.lru[key]
+		db.lruMu.RUnlock()
 		if !ok {
 			c.WriteNull()
 			return

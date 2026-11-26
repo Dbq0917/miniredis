@@ -59,27 +59,35 @@ func (m *Miniredis) cmdExec(c *server.Peer, cmd string, args []string) {
 		return
 	}
 
-	m.Lock()
-	defer m.Unlock()
+	txCmds := ctx.transaction
+	requests := ctx.txRequests
+	batchModes := transactionKeyModes(requests, ctx.selectedDB, ctx.watch)
+	releaseBatch := m.acquireKeyModes(batchModes)
+	defer releaseBatch()
+	defer stopTx(ctx)
 
 	// Check WATCHed keys.
+	m.Lock()
 	for t, version := range ctx.watch {
 		if m.db(t.db).keyVersion[t.key] > version {
+			m.Unlock()
 			// Abort! Abort!
-			stopTx(ctx)
 			c.WriteNullArray()
 			return
 		}
 	}
+	m.Unlock()
 
-	c.WriteLen(len(ctx.transaction))
-	for _, cb := range ctx.transaction {
-		cb(c, ctx)
+	c.WriteLen(len(txCmds))
+	for i, cb := range txCmds {
+		sharedGlobal := false
+		if i < len(requests) {
+			sharedGlobal = commandUsesSharedGlobalLock(requests[i].cmd, requests[i].readOnly)
+		}
+		m.withCommandGlobalLock(sharedGlobal, func() {
+			cb(c, ctx)
+		})
 	}
-	// wake up anyone who waits on anything.
-	m.signal.Broadcast()
-
-	stopTx(ctx)
 }
 
 // DISCARD

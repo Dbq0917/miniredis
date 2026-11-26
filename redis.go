@@ -104,6 +104,9 @@ func withTx(
 	cb txCmd,
 ) {
 	ctx := getCtx(c)
+	if c.Command != "" {
+		setCurrentCommand(ctx, m, c.Command, c.Args)
+	}
 
 	if ctx.nested {
 		// this is a call via Lua's .call(). It's already locked.
@@ -117,11 +120,14 @@ func withTx(
 		c.WriteInline("QUEUED")
 		return
 	}
-	m.Lock()
-	cb(c, ctx)
-	// done, wake up anyone who waits on anything.
-	m.signal.Broadcast()
-	m.Unlock()
+
+	releaseKeys := m.acquireKeys(ctx.currentKeys, !ctx.currentReadOnly)
+	defer releaseKeys()
+
+	sharedGlobal := commandUsesSharedGlobalLock(ctx.currentCmd, ctx.currentReadOnly)
+	m.withCommandGlobalLock(sharedGlobal, func() {
+		cb(c, ctx)
+	})
 }
 
 // blockCmd is executed returns whether it is done

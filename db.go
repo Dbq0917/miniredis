@@ -20,9 +20,15 @@ var (
 func (db *RedisDB) exists(k string) bool {
 	_, ok := db.keys[k]
 	if ok {
-		db.lru[k] = db.master.effectiveNow()
+		db.touchLRU(k)
 	}
 	return ok
+}
+
+func (db *RedisDB) touchLRU(k string) {
+	db.lruMu.Lock()
+	defer db.lruMu.Unlock()
+	db.lru[k] = db.master.effectiveNow()
 }
 
 // t gives the type of a key, or ""
@@ -32,7 +38,7 @@ func (db *RedisDB) t(k string) string {
 
 // incr increases the version and the lru timestamp
 func (db *RedisDB) incr(k string) {
-	db.lru[k] = db.master.effectiveNow()
+	db.touchLRU(k)
 	db.keyVersion[k]++
 }
 

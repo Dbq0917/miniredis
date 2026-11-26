@@ -232,6 +232,8 @@ func (s *Server) Dispatch(c *Peer, args []string) {
 		c.WriteError(errUnknownCommand(cmd, args))
 		return
 	}
+	c.Command = cmdUp
+	c.Args = args
 
 	s.mu.Lock()
 	s.infoCmds++
@@ -292,9 +294,11 @@ type Peer struct {
 	Resp3        bool
 	SwitchResp3  *bool       // we'll switch to this version _after_ the command
 	Ctx          interface{} // anything goes, server won't touch this
-	onDisconnect []func()    // list of callbacks
-	mu           sync.Mutex  // for Block()
-	ClientName   string      // client name set by CLIENT SETNAME
+	Command      string
+	Args         []string
+	onDisconnect []func()   // list of callbacks
+	mu           sync.Mutex // for Block()
+	ClientName   string     // client name set by CLIENT SETNAME
 }
 
 func NewPeer(w *bufio.Writer) *Peer {

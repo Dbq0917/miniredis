@@ -40,6 +40,7 @@ type setKey map[string]struct{}
 type RedisDB struct {
 	master        *Miniredis                          // pointer to the lock in Miniredis
 	id            int                                 // db id
+	lruMu         sync.RWMutex                        // protects lru during shared reads
 	keys          map[string]string                   // Master map of keys with their type
 	stringKeys    map[string]string                   // GET/SET &c. keys
 	hashKeys      map[string]hashKey                  // MGET/MSET &c. keys
@@ -56,9 +57,11 @@ type RedisDB struct {
 
 // Miniredis is a Redis server implementation.
 type Miniredis struct {
-	sync.Mutex
+	Mutex       sync.RWMutex
 	srv         *server.Server
 	nextPreHook server.Hook
+	keyLocks    *keyLockManager
+	randMu      sync.Mutex
 	ip          string
 	port        int
 	passwords   map[string]string // username password
@@ -89,11 +92,22 @@ type connCtx struct {
 	selectedDB       int            // selected DB
 	authenticated    bool           // auth enabled and a valid AUTH seen
 	transaction      []txCmd        // transaction callbacks. Or nil.
+	txRequests       []txRequest    // command metadata aligned with transaction
 	dirtyTransaction bool           // any error during QUEUEing
 	watch            map[dbKey]uint // WATCHed keys
-	subscriber       *Subscriber    // client is in PUBSUB mode if not nil
-	nested           bool           // this is called via Lua
-	nestedSHA        string         // set to the SHA of the nesting function
+	currentCmd       string
+	currentArgs      []string
+	currentKeys      []dbKey
+	currentReadOnly  bool
+	subscriber       *Subscriber // client is in PUBSUB mode if not nil
+	nested           bool        // this is called via Lua
+	nestedSHA        string      // set to the SHA of the nesting function
+}
+
+type txRequest struct {
+	cmd      string
+	args     []string
+	readOnly bool
 }
 
 // NewMiniRedis makes a new, non-started, Miniredis object.
@@ -102,6 +116,7 @@ func NewMiniRedis() *Miniredis {
 		dbs:         map[int]*RedisDB{},
 		scripts:     map[string]string{},
 		subscribers: map[*Subscriber]struct{}{},
+		keyLocks:    newKeyLockManager(),
 	}
 	m.Ctx, m.CtxCancel = context.WithCancel(context.Background())
 	m.signal = sync.NewCond(&m)
@@ -607,6 +622,7 @@ func (m *Miniredis) isValidCMD(c *server.Peer, cmd string, args []string, argReq
 		return false
 	}
 
+	setCurrentCommand(getCtx(c), m, cmd, args)
 	return true
 }
 
@@ -616,29 +632,28 @@ func (m *Miniredis) handleAuth(c *server.Peer) bool {
 		return true
 	}
 
-	m.Lock()
-	defer m.Unlock()
+	m.RLock()
 	if len(m.passwords) == 0 {
+		m.RUnlock()
 		return true
 	}
 	if !getCtx(c).authenticated {
+		m.RUnlock()
 		c.WriteError("NOAUTH Authentication required.")
 		return false
 	}
+	m.RUnlock()
 	return true
 }
 
 // handlePubsub sends an error to the user if the connection is in PUBSUB mode.
 // It'll return true if it did.
 func (m *Miniredis) checkPubsub(c *server.Peer, cmd string) bool {
-	if getCtx(c).nested {
+	ctx := getCtx(c)
+	if ctx.nested {
 		return false
 	}
 
-	m.Lock()
-	defer m.Unlock()
-
-	ctx := getCtx(c)
 	if ctx.subscriber == nil {
 		return false
 	}
@@ -664,11 +679,13 @@ func getCtx(c *server.Peer) *connCtx {
 
 func startTx(ctx *connCtx) {
 	ctx.transaction = []txCmd{}
+	ctx.txRequests = []txRequest{}
 	ctx.dirtyTransaction = false
 }
 
 func stopTx(ctx *connCtx) {
 	ctx.transaction = nil
+	ctx.txRequests = nil
 	unwatch(ctx)
 }
 
@@ -678,6 +695,11 @@ func inTx(ctx *connCtx) bool {
 
 func addTxCmd(ctx *connCtx, cb txCmd) {
 	ctx.transaction = append(ctx.transaction, cb)
+	ctx.txRequests = append(ctx.txRequests, txRequest{
+		cmd:      ctx.currentCmd,
+		args:     append([]string(nil), ctx.currentArgs...),
+		readOnly: ctx.currentReadOnly,
+	})
 }
 
 func watch(db *RedisDB, ctx *connCtx, key string) {
@@ -782,11 +804,15 @@ func (m *Miniredis) Seed(seed int) {
 	m.Lock()
 	defer m.Unlock()
 
+	m.randMu.Lock()
 	// m.rand is not safe for concurrent use.
 	m.rand = rand.New(rand.NewSource(int64(seed)))
+	m.randMu.Unlock()
 }
 
 func (m *Miniredis) randIntn(n int) int {
+	m.randMu.Lock()
+	defer m.randMu.Unlock()
 	if m.rand == nil {
 		return rand.Intn(n)
 	}
