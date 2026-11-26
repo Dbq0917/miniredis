@@ -1684,33 +1684,18 @@ func (m *Miniredis) cmdZscan(c *server.Peer, cmd string, args []string) {
 			return
 		}
 
-		members := db.ssetMembers(opts.key)
-		if opts.withMatch {
-			members, _ = matchKeys(members, opts.match)
-		}
-
-		low := opts.cursor
-		high := low + opts.count
-		// validate high is correct
-		if high > len(members) || high == 0 {
-			high = len(members)
-		}
-		if opts.cursor > high {
-			// invalid cursor
-			c.WriteLen(2)
-			c.WriteBulk("0") // no next cursor
-			c.WriteLen(0)    // no elements
-			return
-		}
-		cursorValue := low + opts.count
-		if cursorValue >= len(members) {
-			cursorValue = 0 // no next cursor
-		}
-		members = members[low:high]
+		cursorValue, members := db.scanPage(
+			scanScope{kind: scanSortedSet, key: opts.key},
+			opts.cursor,
+			opts.count,
+			opts.match,
+			opts.withMatch,
+			nil,
+		)
 
 		c.WriteLen(2)
-		c.WriteBulk(fmt.Sprintf("%d", cursorValue))
-		// HSCAN gives key, values.
+		c.WriteBulk(cursorValue)
+		// ZSCAN gives member, score pairs.
 		c.WriteLen(len(members) * 2)
 		for _, k := range members {
 			c.WriteBulk(k)

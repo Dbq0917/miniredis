@@ -34,6 +34,7 @@ func (db *RedisDB) t(k string) string {
 func (db *RedisDB) incr(k string) {
 	db.lru[k] = db.master.effectiveNow()
 	db.keyVersion[k]++
+	db.scanKeyspaceTouched(k)
 }
 
 // allKeys returns all keys. Sorted.
@@ -59,6 +60,8 @@ func (db *RedisDB) flush() {
 	db.ttl = map[string]time.Duration{}
 	db.hashTTLs = map[string]map[string]time.Duration{}
 	db.streamKeys = map[string]*streamKey{}
+	db.scanSessions = map[scanScope]map[*scanSession]struct{}{}
+	db.scanCursors = map[scanCursorRef]*scanSession{}
 }
 
 // move something to another db. Will return ok. Or not.
@@ -132,6 +135,7 @@ func (db *RedisDB) rename(from, to string) {
 		db.ttl[to] = v
 	}
 	db.incr(to)
+	db.scanRenameKey(from, to)
 
 	db.del(from, true)
 }
@@ -144,6 +148,7 @@ func (db *RedisDB) del(k string, delTTL bool) {
 	delete(db.keys, k)
 	delete(db.lru, k)
 	db.keyVersion[k]++
+	db.scanKeyspaceChanged()
 	if delTTL {
 		delete(db.ttl, k)
 	}
@@ -333,6 +338,7 @@ func (db *RedisDB) setAdd(k string, elems ...string) int {
 	db.setKeys[k] = s
 	if !ok || added > 0 {
 		db.incr(k)
+		db.scanElementsAdded(scanSet, k, elems...)
 	}
 	return added
 }
@@ -359,6 +365,7 @@ func (db *RedisDB) setRem(k string, fields ...string) int {
 		db.setKeys[k] = s
 	}
 	db.incr(k)
+	db.scanScopeTouched(scanSet, k)
 	return removed
 }
 
@@ -420,15 +427,18 @@ func (db *RedisDB) hashSet(k string, fv ...string) int {
 		db.hashKeys[k] = map[string]string{}
 	}
 	new := 0
+	fields := make([]string, 0, len(fv)/2)
 	for idx := 0; idx < len(fv)-1; idx = idx + 2 {
 		f, v := fv[idx], fv[idx+1]
 		_, ok := db.hashKeys[k][f]
 		db.hashKeys[k][f] = v
 		db.incr(k)
+		fields = append(fields, f)
 		if !ok {
 			new++
 		}
 	}
+	db.scanElementsAdded(scanHash, k, fields...)
 	return new
 }
 
@@ -500,6 +510,7 @@ func (db *RedisDB) ssetAdd(key string, score float64, member string) bool {
 	ss[member] = score
 	db.sortedsetKeys[key] = ss
 	db.incr(key)
+	db.scanElementsAdded(scanSortedSet, key, member)
 	return !ok
 }
 
@@ -573,6 +584,9 @@ func (db *RedisDB) ssetRem(key, member string) bool {
 	} else if ok {
 		db.incr(key)
 	}
+	if ok {
+		db.scanScopeTouched(scanSortedSet, key)
+	}
 	return ok
 }
 
@@ -599,6 +613,7 @@ func (db *RedisDB) ssetIncrby(k, m string, delta float64) float64 {
 	v += delta
 	ss.set(v, m)
 	db.incr(k)
+	db.scanElementsAdded(scanSortedSet, k, m)
 	return v
 }
 

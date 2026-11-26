@@ -103,6 +103,7 @@ func (m *Miniredis) cmdHsetnx(c *server.Peer, cmd string, args []string) {
 		}
 		db.hashKeys[opts.key][opts.field] = opts.value
 		db.incr(opts.key)
+		db.scanElementsAdded(scanHash, opts.key, opts.field)
 		c.WriteInt(1)
 	})
 }
@@ -212,6 +213,9 @@ func (m *Miniredis) cmdHdel(c *server.Peer, cmd string, args []string) {
 			db.del(opts.key, true)
 		} else if deleted > 0 {
 			db.incr(opts.key)
+		}
+		if deleted > 0 {
+			db.scanScopeTouched(scanHash, opts.key)
 		}
 	})
 }
@@ -504,6 +508,7 @@ func (m *Miniredis) cmdHscan(c *server.Peer, cmd string, args []string) {
 	opts := struct {
 		key       string
 		cursor    int
+		count     int
 		withMatch bool
 		match     string
 	}{
@@ -523,12 +528,18 @@ func (m *Miniredis) cmdHscan(c *server.Peer, cmd string, args []string) {
 				c.WriteError(msgSyntaxError)
 				return
 			}
-			_, err := strconv.Atoi(args[1])
-			if err != nil {
+			count, err := strconv.Atoi(args[1])
+			if err != nil || count < 0 {
 				setDirty(c)
 				c.WriteError(msgInvalidInt)
 				return
 			}
+			if count == 0 {
+				setDirty(c)
+				c.WriteError(msgSyntaxError)
+				return
+			}
+			opts.count = count
 			args = args[2:]
 			continue
 		}
@@ -549,27 +560,22 @@ func (m *Miniredis) cmdHscan(c *server.Peer, cmd string, args []string) {
 
 	withTx(m, c, func(c *server.Peer, ctx *connCtx) {
 		db := m.db(ctx.selectedDB)
-		// return _all_ (matched) keys every time
-
-		if opts.cursor != 0 {
-			// Invalid cursor.
-			c.WriteLen(2)
-			c.WriteBulk("0") // no next cursor
-			c.WriteLen(0)    // no elements
-			return
-		}
 		if db.exists(opts.key) && db.t(opts.key) != keyTypeHash {
 			c.WriteError(ErrWrongType.Error())
 			return
 		}
 
-		members := db.hashFields(opts.key)
-		if opts.withMatch {
-			members, _ = matchKeys(members, opts.match)
-		}
+		cursorValue, members := db.scanPage(
+			scanScope{kind: scanHash, key: opts.key},
+			opts.cursor,
+			opts.count,
+			opts.match,
+			opts.withMatch,
+			nil,
+		)
 
 		c.WriteLen(2)
-		c.WriteBulk("0") // no next cursor
+		c.WriteBulk(cursorValue)
 		// HSCAN gives key, values.
 		c.WriteLen(len(members) * 2)
 		for _, k := range members {

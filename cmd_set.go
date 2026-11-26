@@ -3,7 +3,6 @@
 package miniredis
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -664,35 +663,20 @@ func (m *Miniredis) cmdSscan(c *server.Peer, cmd string, args []string) {
 
 	withTx(m, c, func(c *server.Peer, ctx *connCtx) {
 		db := m.db(ctx.selectedDB)
-		// return _all_ (matched) keys every time
 		if db.exists(opts.key) && db.t(opts.key) != "set" {
 			c.WriteError(ErrWrongType.Error())
 			return
 		}
-		members := db.setMembers(opts.key)
-		if opts.withMatch {
-			members, _ = matchKeys(members, opts.match)
-		}
-		low := opts.cursor
-		high := low + opts.count
-		// validate high is correct
-		if high > len(members) || high == 0 {
-			high = len(members)
-		}
-		if opts.cursor > high {
-			// invalid cursor
-			c.WriteLen(2)
-			c.WriteBulk("0") // no next cursor
-			c.WriteLen(0)    // no elements
-			return
-		}
-		cursorValue := low + opts.count
-		if cursorValue > len(members) {
-			cursorValue = 0 // no next cursor
-		}
-		members = members[low:high]
+		cursorValue, members := db.scanPage(
+			scanScope{kind: scanSet, key: opts.key},
+			opts.cursor,
+			opts.count,
+			opts.match,
+			opts.withMatch,
+			nil,
+		)
 		c.WriteLen(2)
-		c.WriteBulk(fmt.Sprintf("%d", cursorValue))
+		c.WriteBulk(cursorValue)
 		c.WriteLen(len(members))
 		for _, k := range members {
 			c.WriteBulk(k)

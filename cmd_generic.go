@@ -5,7 +5,6 @@ package miniredis
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -659,38 +658,22 @@ func (m *Miniredis) cmdScan(c *server.Peer, cmd string, args []string) {
 
 	withTx(m, c, func(c *server.Peer, ctx *connCtx) {
 		db := m.db(ctx.selectedDB)
-		// We return _all_ (matched) keys every time, so that cursors work.
-		// We ignore "COUNT", which is allowed according to the Redis docs.
-		var keys []string
-
-		if opts.withType {
-			keys = make([]string, 0)
-			for k, t := range db.keys {
-				// type must be given exactly; no pattern matching is performed
-				if t == opts._type {
-					keys = append(keys, k)
-				}
+		accept := func(key string) bool {
+			if opts.withType && db.t(key) != opts._type {
+				return false
 			}
-		} else {
-			keys = db.allKeys()
+			return true
 		}
-
-		sort.Strings(keys) // To make things deterministic.
-
-		if opts.withMatch {
-			keys, _ = matchKeys(keys, opts.match)
-		}
-
-		// we only ever return all at once, so no non-zero cursor can every be valid
-		if opts.cursor != 0 {
-			c.WriteLen(2)
-			c.WriteBulk("0") // no next cursor
-			c.WriteLen(0)    // no elements
-			return
-		}
-		cursorValue := 0 // we don't use cursors
+		cursorValue, keys := db.scanPage(
+			scanScope{kind: scanKeys},
+			opts.cursor,
+			opts.count,
+			opts.match,
+			opts.withMatch,
+			accept,
+		)
 		c.WriteLen(2)
-		c.WriteBulk(fmt.Sprintf("%d", cursorValue))
+		c.WriteBulk(cursorValue)
 		c.WriteLen(len(keys))
 		for _, k := range keys {
 			c.WriteBulk(k)
