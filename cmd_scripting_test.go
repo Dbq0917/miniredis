@@ -733,3 +733,63 @@ return res;
 		)
 	})
 }
+
+// A broken sandbox protection script must prevent the user script from
+// running at all. Its error is reported back to the client.
+func TestEvalBrokenProtectGlobals(t *testing.T) {
+	origProtect := protectGlobals
+	defer func() { protectGlobals = origProtect }()
+
+	t.Run("protection runtime error", func(t *testing.T) {
+		protectGlobals = `error("protection failed")`
+		_, c := runWithClient(t)
+
+		mustContain(t, c,
+			"EVAL", "return redis.call('SET', 'leaked', 'yes')", "0",
+			"protection failed",
+		)
+		// The user script must not have run, so the key must not exist.
+		mustNil(t, c, "GET", "leaked")
+	})
+
+	t.Run("protection syntax error", func(t *testing.T) {
+		protectGlobals = `local function broken(`
+		_, c := runWithClient(t)
+
+		mustContain(t, c,
+			"EVAL", "return redis.call('SET', 'leaked', 'yes')", "0",
+			"Error compiling script",
+		)
+		mustNil(t, c, "GET", "leaked")
+	})
+
+	t.Run("user script rejected and normal scripts restored", func(t *testing.T) {
+		protectGlobals = `error("protection failed")`
+		_, c := runWithClient(t)
+
+		mustContain(t, c,
+			"EVAL", "return 42", "0",
+			"protection failed",
+		)
+
+		protectGlobals = origProtect
+		mustDo(t, c,
+			"EVAL", "return 42", "0",
+			proto.Int(42),
+		)
+	})
+}
+
+// The sandbox protection script is compiled once and reused on every call,
+// instead of being re-parsed and re-compiled for each EVAL.
+func TestProtectGlobalsCompiledOnce(t *testing.T) {
+	first, err := compile(protectGlobals)
+	ok(t, err)
+	for i := 0; i < 5; i++ {
+		again, err := compile(protectGlobals)
+		ok(t, err)
+		if again != first {
+			t.Fatal("protectGlobals was re-compiled instead of reusing the cached prototype")
+		}
+	}
+}

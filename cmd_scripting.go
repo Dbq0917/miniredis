@@ -101,7 +101,15 @@ func (m *Miniredis) runLuaScript(c *server.Peer, sha, script string, readOnly bo
 
 	l.RegisterModule("os", mkLuaOS())
 
-	_ = doScript(l, protectGlobals)
+	// The sandbox protection must be in place before any user code runs.
+	// If it fails to compile or errors at runtime the user script must not
+	// be executed, otherwise it would run without any sandboxing.
+	// protectGlobals is compiled only once: compile() caches the prototype in
+	// parsedScripts, so repeated script calls reuse the same compiled result.
+	if err := doScript(l, protectGlobals); err != nil {
+		c.WriteError(err.Error())
+		return false
+	}
 
 	// lua can call redis.setresp(...), but it's tmp state.
 	oldresp := c.Resp3
